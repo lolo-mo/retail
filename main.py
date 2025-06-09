@@ -3,7 +3,7 @@ from tkinter import ttk
 import os
 import datetime
 
-# Import manager classes (from Phase 1 & 2)
+# Import manager classes
 from database import DatabaseManager
 from inventory_manager import InventoryManager
 from pos_manager import POSManager
@@ -12,7 +12,7 @@ from credit_sales_manager import CreditSalesManager
 from expenses_manager import ExpensesManager
 from report_generator import ReportGenerator
 
-# Import UI frame classes (from Phase 3)
+# Import UI frame classes
 from ui_components.dashboard_frame import DashboardFrame
 from ui_components.inventory_frame import InventoryFrame
 from ui_components.pos_frame import POSFrame
@@ -44,9 +44,11 @@ class MainApplication(tk.Tk):
         # --- 2. Initialize Business Logic Managers ---
         # These managers encapsulate the core logic and interact with the database.
         self.inventory_manager = InventoryManager(self.db_manager)
-        self.pos_manager = POSManager(self.db_manager, self.inventory_manager)
-        self.stock_log_manager = StockLogManager(self.db_manager, self.inventory_manager)
+        # Initialize CreditSalesManager before POSManager as POSManager depends on it
         self.credit_sales_manager = CreditSalesManager(self.db_manager)
+        # Corrected line: Pass self.credit_sales_manager to POSManager
+        self.pos_manager = POSManager(self.db_manager, self.inventory_manager, self.credit_sales_manager)
+        self.stock_log_manager = StockLogManager(self.db_manager, self.inventory_manager)
         self.expenses_manager = ExpensesManager(self.db_manager)
         self.report_generator = ReportGenerator(self.db_manager)
 
