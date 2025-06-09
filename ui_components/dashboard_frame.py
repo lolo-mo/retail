@@ -142,9 +142,9 @@ class DashboardFrame(ttk.Frame):
         Fetches and updates all dashboard metrics from the respective managers.
         This method should be called periodically or when the dashboard tab is selected.
         """
-        self.after(100, self._perform_metric_updates) # Use self.after to avoid blocking GUI
-        # If this method is called frequently, consider using threading to prevent UI freeze
-        # self.after(100, lambda: threading.Thread(target=self._perform_metric_updates).start())
+        # Using a thread for _perform_metric_updates to prevent UI freeze
+        # for potentially long database operations.
+        threading.Thread(target=self._perform_metric_updates).start()
 
     def _perform_metric_updates(self):
         """
@@ -154,12 +154,13 @@ class DashboardFrame(ttk.Frame):
         try:
             # --- Inventory Valuation ---
             inventory_val = self.controller.inventory_manager.calculate_inventory_valuation()
-            self.total_selling_value_label.config(text=self.controller.inventory_manager.format_currency(inventory_val['selling_value']))
-            self.total_supplier_value_label.config(text=self.controller.inventory_manager.format_currency(inventory_val['supplier_value']))
+            # Use report_generator.format_currency for all formatting
+            self.total_selling_value_label.config(text=self.controller.report_generator.format_currency(inventory_val['selling_value']))
+            self.total_supplier_value_label.config(text=self.controller.report_generator.format_currency(inventory_val['supplier_value']))
 
             # --- Projected Profit ---
             projected_profit = self.controller.inventory_manager.calculate_projected_profit()
-            self.projected_profit_label.config(text=self.controller.inventory_manager.format_currency(projected_profit))
+            self.projected_profit_label.config(text=self.controller.report_generator.format_currency(projected_profit))
             if projected_profit < 0:
                 self.projected_profit_label.config(foreground='#dc3545') # Red if loss
             else:
@@ -168,7 +169,7 @@ class DashboardFrame(ttk.Frame):
 
             # --- Re-Order Cost ---
             reorder_cost = self.controller.inventory_manager.calculate_reorder_cost()
-            self.reorder_cost_label.config(text=self.controller.inventory_manager.format_currency(reorder_cost))
+            self.reorder_cost_label.config(text=self.controller.report_generator.format_currency(reorder_cost))
             if reorder_cost > 0:
                 self.reorder_cost_label.config(foreground='#dc3545') # Red if cost exists
             else:
@@ -187,7 +188,10 @@ class DashboardFrame(ttk.Frame):
 
 
             # Weekly (Last 7 days including today)
-            start_of_week = today - datetime.timedelta(days=today.weekday()) # Monday as start of week
+            # Find the start of the current week (Monday)
+            # For consistent weekly reports, use a fixed start (e.g., Monday).
+            # The .weekday() method returns 0 for Monday, 6 for Sunday.
+            start_of_week = today - datetime.timedelta(days=today.weekday())
             weekly_report = self.controller.report_generator.generate_financial_summary_report(
                 start_of_week.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
             )
@@ -205,15 +209,16 @@ class DashboardFrame(ttk.Frame):
             self.monthly_net_profit_label.config(foreground='#28a745' if monthly_report['net_income'] >= 0 else '#dc3545')
 
             # --- Items Sold (COGS) Today ---
-            self.cogs_treeview.delete(*self.cogs_treeview.get_children()) # Clear existing items
+            # Use after(0, lambda: ...) to safely update GUI from a separate thread
+            self.after(0, lambda: self.cogs_treeview.delete(*self.cogs_treeview.get_children())) # Clear existing items
             items_sold_cogs = self.controller.report_generator.get_cogs_per_item_today()
             for item in items_sold_cogs:
-                self.cogs_treeview.insert("", "end", values=(
+                self.after(0, lambda item=item: self.cogs_treeview.insert("", "end", values=(
                     item['item_name'],
                     item['quantity_sold'],
                     self.controller.report_generator.format_currency(item['total_selling_value']),
                     self.controller.report_generator.format_currency(item['total_cogs_item'])
-                ))
+                )))
 
         except Exception as e:
             print(f"Error updating dashboard metrics: {e}")
