@@ -34,9 +34,11 @@ class POSFrame(ttk.Frame):
         ttk.Label(left_panel, text="Item No. / Name:", font=('Inter', 10)).grid(row=1, column=0, sticky="w", pady=5)
         self.item_search_entry = ttk.Entry(left_panel, font=('Inter', 12))
         self.item_search_entry.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        self.item_search_entry.bind("<Return>", self._search_and_add_item) # Bind Enter key
+        # Bind <KeyRelease> for live search, <Return> for direct add
+        self.item_search_entry.bind("<KeyRelease>", self._perform_live_search)
+        self.item_search_entry.bind("<Return>", self._try_add_from_search_entry)
 
-        ttk.Button(left_panel, text="Add Item (by Item No./Name)", command=self._search_and_add_item, style='Accent.TButton').grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        # Removed the explicit "Add Item (by Item No./Name)" button as it's now handled by live search and Enter key.
 
         # --- Product Search Results Listbox (for visual selection) ---
         ttk.Label(left_panel, text="Search Results:", font=('Inter', 10)).grid(row=4, column=0, sticky="w", pady=5)
@@ -56,7 +58,7 @@ class POSFrame(ttk.Frame):
         self.quantity_entry = ttk.Entry(qty_frame, font=('Inter', 12), width=5)
         self.quantity_entry.grid(row=0, column=1, sticky="ew", padx=5)
         self.quantity_entry.insert(0, "1") # Default quantity
-        self.quantity_entry.bind("<Return>", self._add_selected_to_transaction)
+        self.quantity_entry.bind("<Return>", self._add_selected_to_transaction) # Bind Enter key to add selected
 
         ttk.Button(qty_frame, text="Add Selected", command=self._add_selected_to_transaction).grid(row=0, column=2, sticky="ew", padx=5)
         
@@ -141,56 +143,93 @@ class POSFrame(ttk.Frame):
         total = self.controller.pos_manager.calculate_transaction_total()
         self.total_amount_label.config(text=self.controller.report_generator.format_currency(total))
 
-    def _search_and_add_item(self, event=None):
+    def _perform_live_search(self, event=None):
         """
-        Searches for products based on entry, displays results, or adds directly if exact match.
+        Performs a live search for products based on the item search entry
+        and populates the search results listbox.
         """
         query = self.item_search_entry.get().strip()
-        self._clear_search_results() # Clear previous search results
+        self._clear_search_results()
 
         if not query:
-            # If search is empty, just clear results and do nothing
             return
 
-        # Perform search, including inactive items for comprehensive search results (though not for sale)
-        # However, for POS, we should ONLY search for active items.
-        # Modified to only search for active items for POS
         products = self.controller.inventory_manager.search_products(query, include_inactive=False)
 
         if not products:
             self.search_results_listbox.insert(tk.END, "No active items found.")
             return
 
-        exact_match = None
-        if len(products) == 1 and (products[0]['item_no'] == query or products[0]['item_name'].lower() == query.lower()):
-            exact_match = products[0]
+        for product in products:
+            self.search_results_listbox.insert(tk.END, f"{product['item_no']} - {product['item_name']} (Stock: {product['current_stock']})")
+
+        # Automatically select the first item if there are results
+        if products:
+            self.search_results_listbox.selection_set(0)
+            # Do NOT focus here, keep focus on the entry for continued typing.
+            # self.search_results_listbox.focus_set()
+
+
+    def _try_add_from_search_entry(self, event=None):
+        """
+        Attempts to add an item to the transaction directly from the search entry
+        if it's an exact match or the only item in the search results.
+        Triggered by pressing Enter in the item_search_entry.
+        """
+        query = self.item_search_entry.get().strip()
+        if not query:
+            return
+
+        # Perform a fresh search based on the current query
+        products = self.controller.inventory_manager.search_products(query, include_inactive=False)
+
+        if not products:
+            messagebox.showwarning("Item Not Found", f"No active item found matching '{query}'.")
+            return
         
-        if exact_match:
-            # If exact match, directly add to transaction
-            self._add_item_to_transaction_logic(exact_match['item_no'], 1) # Add 1 by default
-            self.item_search_entry.delete(0, tk.END) # Clear entry after adding
+        # Check for exact match first
+        exact_match_item_no = None
+        for p in products:
+            if p['item_no'].lower() == query.lower() or p['item_name'].lower() == query.lower():
+                exact_match_item_no = p['item_no']
+                break
+
+        if exact_match_item_no:
+            # If exact match found, add it directly
+            try:
+                quantity = int(self.quantity_entry.get())
+                if quantity <= 0:
+                    messagebox.showwarning("Invalid Quantity", "Quantity must be a positive integer.")
+                    return
+            except ValueError:
+                messagebox.showwarning("Invalid Quantity", "Please enter a valid number for quantity.")
+                return
+
+            self._add_item_to_transaction_logic(exact_match_item_no, quantity)
+            self.item_search_entry.delete(0, tk.END) # Clear search entry after adding
+            self._clear_search_results() # Clear search results after direct add
+        elif len(products) == 1:
+            # If only one product found in search results, add it
+            try:
+                quantity = int(self.quantity_entry.get())
+                if quantity <= 0:
+                    messagebox.showwarning("Invalid Quantity", "Quantity must be a positive integer.")
+                    return
+            except ValueError:
+                messagebox.showwarning("Invalid Quantity", "Please enter a valid number for quantity.")
+                return
+            self._add_item_to_transaction_logic(products[0]['item_no'], quantity)
+            self.item_search_entry.delete(0, tk.END) # Clear search entry after adding
             self._clear_search_results() # Clear search results after direct add
         else:
-            # Populate listbox with search results
-            for product in products:
-                self.search_results_listbox.insert(tk.END, f"{product['item_no']} - {product['item_name']} (Stock: {product['current_stock']})")
-                self.search_results_listbox.item_product_data = product # Store product data with item
-            # Automatically select the first item if there are results
-            if products:
-                self.search_results_listbox.selection_set(0)
-                self.search_results_listbox.focus_set()
-
+            # If multiple results but no exact match, just inform the user
+            messagebox.showinfo("Multiple Results", "Multiple items found. Please select from the list or refine your search.")
+            self.search_results_listbox.focus_set() # Move focus to listbox for selection
 
     def _on_result_select(self, event):
         """Handles selection in the search results listbox."""
-        selected_indices = self.search_results_listbox.curselection()
-        if not selected_indices:
-            return
-        
-        # You can retrieve the associated product data here if stored, or fetch it again
-        # For now, we rely on the logic in _add_selected_to_transaction to get data by item_no
-        # if you stored product objects with each listbox item, you could get it like:
-        # selected_product = self.search_results_listbox.item_product_data[selected_indices[0]]
+        # This function is triggered when an item is selected in the listbox.
+        # The "_add_selected_to_transaction" button/event will then use this selection.
         pass
 
 
@@ -261,7 +300,10 @@ class POSFrame(ttk.Frame):
                 messagebox.showerror("Error", message)
 
     def _process_sale_dialog(self):
-        """Opens a dialog to finalize the sale."""
+        """
+        Opens a dialog to finalize the sale.
+        Ensures both customer name and additional charge prompts appear for credit sales.
+        """
         total_amount = self.controller.pos_manager.calculate_transaction_total()
         if total_amount <= 0:
             messagebox.showwarning("No Items", "Please add items to the transaction before processing a sale.")
@@ -269,22 +311,40 @@ class POSFrame(ttk.Frame):
 
         payment_type = self.payment_type_var.get()
         customer_name = None
+        additional_charge = 0.0
 
         if payment_type == "Credit":
-            # Prompt for customer name for credit sales
-            customer_name_dialog = tk.simpledialog.askstring("Credit Sale", "Enter Customer Name:")
-            if customer_name_dialog:
-                customer_name = customer_name_dialog.strip()
-                if not customer_name:
-                    messagebox.showwarning("Input Required", "Customer Name is required for Credit Sales.")
-                    return
-            else:
-                # User cancelled customer name entry
+            # 1. Prompt for customer name for credit sales
+            customer_name_dialog = tk.simpledialog.askstring("Credit Sale", "Enter Customer Name (required for credit sales):", parent=self.master)
+            
+            if customer_name_dialog is None: # User explicitly cancelled the customer name dialog
+                messagebox.showwarning("Operation Cancelled", "Customer name entry cancelled. Credit sale cannot proceed.")
                 return
+            
+            customer_name = customer_name_dialog.strip()
+            if not customer_name: # If input was just whitespace or empty after stripping
+                messagebox.showwarning("Input Required", "Customer Name cannot be empty for Credit Sales. Sale will not proceed.", parent=self.master)
+                return # Exit if customer name is empty/invalid
+
+            # --- Use a custom Toplevel dialog for additional charge for better control ---
+            # Create an instance of the custom dialog
+            additional_charge_dialog = AdditionalChargeDialog(self.master, total_amount, self.controller.report_generator.format_currency)
+            # The wait_window call makes the dialog modal, execution pauses here until it's closed
+            self.master.wait_window(additional_charge_dialog) 
+            
+            # Retrieve the result from the custom dialog
+            if additional_charge_dialog.result is not None:
+                additional_charge = additional_charge_dialog.result
+            else:
+                # User cancelled the additional charge dialog
+                messagebox.showinfo("Charge Cancelled", "Additional charge entry cancelled. Credit sale will proceed without extra charge.")
+                additional_charge = 0.0
+
 
         # Simple confirmation before processing
-        if messagebox.askyesno("Confirm Sale", f"Process sale for {self.controller.report_generator.format_currency(total_amount)} as {payment_type}?"):
-            success, message = self.controller.pos_manager.process_sale(payment_type, customer_name)
+        final_total_display = total_amount + additional_charge if payment_type == "Credit" else total_amount
+        if messagebox.askyesno("Confirm Sale", f"Process sale for {self.controller.report_generator.format_currency(final_total_display)} as {payment_type}?"):
+            success, message = self.controller.pos_manager.process_sale(payment_type, customer_name, None, additional_charge)
             if success:
                 messagebox.showinfo("Sale Complete", message)
                 self._update_transaction_display() # Clear and refresh POS UI
@@ -305,3 +365,75 @@ class POSFrame(ttk.Frame):
         self.controller.pos_manager.clear_transaction() # Ensure manager's transaction is also cleared
         self._update_transaction_display() # Refresh display to show empty transaction
         self.item_search_entry.focus_set() # Set initial focus
+
+
+class AdditionalChargeDialog(tk.Toplevel):
+    """
+    A custom Toplevel window for entering an additional charge for credit sales.
+    Provides better control over focus and validation.
+    """
+    def __init__(self, parent, current_total_amount, format_currency_func):
+        """
+        Initializes the AdditionalChargeDialog.
+
+        Args:
+            parent: The parent widget (usually the main Tkinter root or Toplevel).
+            current_total_amount (float): The current calculated total of the sale.
+            format_currency_func (function): A function to format currency (e.g., self.controller.report_generator.format_currency).
+        """
+        super().__init__(parent)
+        self.parent = parent
+        self.result = None # Stores the entered charge amount, or None if cancelled
+        self.current_total_amount = current_total_amount
+        self.format_currency = format_currency_func
+
+        self.title("Enter Additional Charge")
+        self.geometry("350x180")
+        self.transient(parent) # Make dialog transient to parent
+        self.grab_set()        # Make dialog modal
+        self.resizable(False, False)
+
+        main_frame = ttk.Frame(self, padding="20")
+        main_frame.pack(fill="both", expand=True)
+        main_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(main_frame, text="Current Sale Total:", font=('Inter', 10, 'bold')).grid(row=0, column=0, sticky="w", pady=5, padx=5)
+        ttk.Label(main_frame, text=self.format_currency(self.current_total_amount), font=('Inter', 10)).grid(row=0, column=1, sticky="w", pady=5, padx=5)
+
+        ttk.Label(main_frame, text="Additional Charge:", font=('Inter', 10, 'bold')).grid(row=1, column=0, sticky="w", pady=5, padx=5)
+        self.charge_entry = ttk.Entry(main_frame, font=('Inter', 10))
+        self.charge_entry.grid(row=1, column=1, sticky="ew", pady=5, padx=5)
+        self.charge_entry.insert(0, "0.00") # Default value
+        self.charge_entry.focus_set() # Set initial focus to the entry field
+
+        # Buttons
+        button_frame = ttk.Frame(self, padding="10")
+        button_frame.pack(fill="x", side="bottom")
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
+
+        ttk.Button(button_frame, text="OK", command=self._on_ok, style='Accent.TButton').grid(row=0, column=0, padx=5, sticky="ew")
+        ttk.Button(button_frame, text="Cancel", command=self._on_cancel).grid(row=0, column=1, padx=5, sticky="ew")
+
+        # Bind Enter key to OK button
+        self.charge_entry.bind("<Return>", lambda event: self._on_ok())
+        
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel) # Handle window close button
+
+    def _on_ok(self):
+        """Handles the OK button click, validates input, and stores result."""
+        try:
+            charge = float(self.charge_entry.get())
+            if charge < 0:
+                messagebox.showwarning("Invalid Charge", "Additional charge cannot be negative. Please enter a positive number or 0.")
+            else:
+                self.result = charge
+                self.destroy() # Close the dialog
+        except ValueError:
+            messagebox.showwarning("Invalid Input", "Please enter a valid numeric amount for the additional charge (e.g., 5.00).")
+
+    def _on_cancel(self):
+        """Handles the Cancel button click or window close, sets result to None."""
+        self.result = None
+        self.destroy() # Close the dialog
+
