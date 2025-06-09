@@ -34,6 +34,7 @@ class DatabaseManager:
         """
         Initializes the database by creating all necessary tables if they do not already exist.
         This method is called once when the application starts.
+        Handles schema evolution for existing databases (e.g., adding new columns).
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -52,6 +53,19 @@ class DatabaseManager:
                 reorder_qty INTEGER DEFAULT 5     -- Suggested quantity to reorder when stock is low
             )
         ''')
+
+        # Add 'is_active' column if it doesn't exist (schema evolution)
+        try:
+            cursor.execute("ALTER TABLE products ADD COLUMN is_active INTEGER DEFAULT 1")
+            conn.commit()
+            print("Added 'is_active' column to 'products' table.")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name: is_active" in str(e):
+                # Column already exists, which is fine
+                pass
+            else:
+                raise e # Re-raise unexpected errors
+
 
         # 2. Sales Table: Logs each completed sales transaction
         cursor.execute('''
@@ -127,7 +141,7 @@ class DatabaseManager:
     # --- Basic CRUD Methods for Products (Examples) ---
     # You will add similar methods for all other tables as you build out managers.
 
-    def add_product(self, item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_alert, reorder_qty):
+    def add_product(self, item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_alert, reorder_qty, is_active=1):
         """
         Adds a new product to the database.
         Returns a tuple: (True/False, "message")
@@ -136,9 +150,9 @@ class DatabaseManager:
         cursor = conn.cursor()
         try:
             cursor.execute('''
-                INSERT INTO products (item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_alert, reorder_qty)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_alert, reorder_qty))
+                INSERT INTO products (item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_alert, reorder_qty, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_alert, reorder_qty, is_active))
             conn.commit()
             return True, f"Product '{item_name}' (Item No: {item_no}) added successfully."
         except sqlite3.IntegrityError:
@@ -148,11 +162,14 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def get_all_products(self):
-        """Retrieves all products from the database."""
+    def get_all_products(self, include_inactive=False):
+        """Retrieves all products from the database, optionally including inactive ones."""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM products")
+        if include_inactive:
+            cursor.execute("SELECT * FROM products")
+        else:
+            cursor.execute("SELECT * FROM products WHERE is_active = 1")
         products = cursor.fetchall()
         conn.close()
         # Convert rows to dictionaries for easier consumption by managers/UI
@@ -199,6 +216,23 @@ class DatabaseManager:
         except Exception as e:
             print(f"An error occurred while deleting product: {e}")
             return False
+        finally:
+            conn.close()
+
+    def update_product_status(self, item_no, is_active):
+        """
+        Updates the active status of a product (1 for active, 0 for inactive).
+        Returns a tuple: (True/False, "message")
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("UPDATE products SET is_active = ? WHERE item_no = ?", (is_active, item_no))
+            conn.commit()
+            status_text = "activated" if is_active == 1 else "discontinued"
+            return True, f"Product '{item_no}' has been {status_text}."
+        except Exception as e:
+            return False, f"Error updating status for product '{item_no}': {e}"
         finally:
             conn.close()
 
@@ -371,11 +405,14 @@ class DatabaseManager:
         conn.close()
         return [dict(row) for row in credit_sales]
 
-    def get_unpaid_credit_sales(self):
-        """Retrieves all unpaid or partially paid credit sales."""
+    def get_unpaid_credit_sales(self, customer_name=None):
+        """Retrieves all unpaid or partially paid credit sales, optionally filtered by customer name."""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM credit_sales WHERE status != 'Paid' ORDER BY customer_name, due_date")
+        if customer_name:
+            cursor.execute("SELECT * FROM credit_sales WHERE status != 'Paid' AND customer_name = ? ORDER BY customer_name, due_date", (customer_name,))
+        else:
+            cursor.execute("SELECT * FROM credit_sales WHERE status != 'Paid' ORDER BY customer_name, due_date")
         credit_sales = cursor.fetchall()
         conn.close()
         return [dict(row) for row in credit_sales]
