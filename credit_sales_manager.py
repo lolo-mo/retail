@@ -2,10 +2,8 @@ import datetime
 
 class CreditSalesManager:
     """
-    Manages all business logic related to credit sales.
-    This includes recording new credit sales, processing payments against them,
-    and retrieving credit sales records.
-    It primarily interacts with the DatabaseManager.
+    Manages all business logic related to credit sales, including
+    recording new credit sales, managing payments, and retrieving credit accounts.
     """
     def __init__(self, db_manager):
         """
@@ -13,121 +11,76 @@ class CreditSalesManager:
         """
         self.db_manager = db_manager
 
-    def add_credit_sale(self, sale_id, customer_name, original_amount, due_date=None):
+    def add_credit_sale(self, sale_id, customer_name, original_amount, balance, status, due_date=None):
         """
-        Records a new credit sale in the database.
-        Initializes balance to original_amount and status to 'Unpaid'.
-        Returns a tuple: (True/False, "message")
-        """
-        if not customer_name or not original_amount:
-            return False, "Customer name and original amount are required for a credit sale."
-        if original_amount <= 0:
-            return False, "Original amount must be positive for a credit sale."
+        Adds a new credit sale record to the database.
 
-        # Initial balance is the full amount, status is 'Unpaid'
-        balance = original_amount
-        status = 'Unpaid'
+        Args:
+            sale_id (int): The ID of the associated sales transaction.
+            customer_name (str): The name of the customer who bought on credit.
+            original_amount (float): The total amount of the sale at the time of credit.
+            balance (float): The initial outstanding balance (usually same as original_amount for new sales).
+            status (str): Initial status, e.g., 'Unpaid'.
+            due_date (str, optional): The due date for the credit (YYYY-MM-DD). Defaults to None.
+
+        Returns:
+            tuple: (bool, str) - Success status and a message.
+        """
+        if not customer_name:
+            return False, "Customer name cannot be empty for credit sales."
+        if original_amount <= 0:
+            return False, "Original amount must be positive for credit sales."
+        
+        # Ensure balance is consistent with original_amount for new credit sales
+        # Or you can let the caller define balance if partial credit is allowed
+        # For now, we assume balance is always the original_amount on creation
+        # The database already handles this for new credit sales, so we just pass it.
 
         success = self.db_manager.add_credit_sale(
             sale_id, customer_name, original_amount, balance, status, due_date
         )
-
         if success:
-            return True, f"Credit sale for '{customer_name}' (₱ {original_amount:,.2f}) recorded successfully."
+            return True, "Credit sale recorded successfully."
         else:
-            return False, "Failed to record credit sale due to a database error."
+            return False, "Failed to record credit sale."
 
     def record_credit_payment(self, credit_id, amount_paid):
         """
-        Records a payment towards an existing credit sale, updates the balance and status.
-        Returns a tuple: (True/False, "message")
+        Records a payment towards a credit sale and updates the balance and status.
+
+        Args:
+            credit_id (int): The ID of the credit sale to update.
+            amount_paid (float): The amount of payment received.
+
+        Returns:
+            tuple: (bool, str) - Success status and a message.
         """
-        try:
-            amount_paid = float(amount_paid)
-            if amount_paid <= 0:
-                return False, "Payment amount must be positive."
-        except ValueError:
-            return False, "Invalid payment amount. Please enter a number."
+        if amount_paid <= 0:
+            return False, "Payment amount must be positive."
 
-        # Fetch the current credit sale details first
-        conn = self.db_manager._get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute("SELECT * FROM credit_sales WHERE credit_id = ?", (credit_id,))
-            credit_sale = cursor.fetchone()
-            if not credit_sale:
-                return False, "Credit sale not found."
-            credit_sale = dict(credit_sale) # Convert Row object to dictionary
-
-            if credit_sale['status'] == 'Paid':
-                return False, "This credit sale has already been fully paid."
-
-            new_amount_paid = credit_sale['amount_paid'] + amount_paid
-            new_balance = credit_sale['original_amount'] - new_amount_paid
-
-            status = 'Unpaid'
-            if new_balance <= 0:
-                status = 'Paid'
-                new_balance = 0.0 # Ensure balance doesn't go negative
-            elif new_amount_paid > 0:
-                status = 'Partially Paid'
-
-            # Update the credit sale in the database
-            cursor.execute('''
-                UPDATE credit_sales
-                SET amount_paid = ?, balance = ?, status = ?
-                WHERE credit_id = ?
-            ''', (new_amount_paid, new_balance, status, credit_id))
-            conn.commit()
-
-            return True, f"Payment of ₱ {amount_paid:,.2f} recorded for credit sale ID {credit_id}. New balance: ₱ {new_balance:,.2f}."
-
-        except Exception as e:
-            conn.rollback()
-            print(f"Error recording credit payment: {e}")
-            return False, f"An error occurred while recording payment: {e}"
-        finally:
-            conn.close()
+        success = self.db_manager.update_credit_sale_payment(credit_id, amount_paid)
+        if success:
+            return True, "Payment recorded and credit balance updated."
+        else:
+            return False, "Failed to record payment or update credit sale."
 
     def get_all_credit_sales(self):
         """
         Retrieves all credit sales records from the database.
-        Returns a list of credit sale dictionaries.
+        Returns a list of dictionaries.
         """
         return self.db_manager.get_all_credit_sales()
 
     def get_unpaid_credit_sales(self):
         """
         Retrieves all credit sales that are 'Unpaid' or 'Partially Paid'.
-        Returns a list of credit sale dictionaries.
+        Returns a list of dictionaries.
         """
         return self.db_manager.get_unpaid_credit_sales()
 
-    def delete_credit_sale(self, credit_id):
+    def get_credit_sales_by_customer(self, customer_name):
         """
-        Deletes a credit sale record from the database.
-        Use with caution, as this removes historical data.
-        Returns a tuple: (True/False, "message")
+        Retrieves credit sales for a specific customer.
+        Returns a list of dictionaries.
         """
-        conn = self.db_manager._get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute("DELETE FROM credit_sales WHERE credit_id = ?", (credit_id,))
-            conn.commit()
-            if cursor.rowcount > 0:
-                return True, f"Credit sale ID {credit_id} deleted successfully."
-            else:
-                return False, f"Credit sale ID {credit_id} not found."
-        except Exception as e:
-            conn.rollback()
-            print(f"Error deleting credit sale: {e}")
-            return False, f"An error occurred while deleting credit sale: {e}"
-        finally:
-            conn.close()
-
-    def format_currency(self, amount):
-        """
-        Helper method to format a numeric amount as Philippine Peso (₱).
-        """
-        return f"₱ {amount:,.2f}"
-
+        return self.db_manager.get_unpaid_credit_sales(customer_name=customer_name)
