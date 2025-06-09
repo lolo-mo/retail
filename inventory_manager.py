@@ -1,0 +1,311 @@
+import csv
+import os
+import datetime
+
+class InventoryManager:
+    """
+    Manages all business logic related to inventory.
+    It interacts with the DatabaseManager to perform data operations
+    and handles calculations related to inventory valuation, re-order, etc.
+    """
+    def __init__(self, db_manager):
+        """
+        Initializes the InventoryManager with an instance of DatabaseManager.
+        This allows it to interact with the database.
+        """
+        self.db_manager = db_manager
+        # Default reorder level, can be made configurable later
+        self.reorder_default_level = 5
+        # Default markup percentage for suggested selling price
+        self.default_markup_percentage = 30 # 30% markup
+
+    def add_product(self, item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_qty):
+        """
+        Adds a new product to the inventory.
+        Automatically sets reorder_alert based on current_stock.
+        """
+        reorder_alert = 1 if current_stock < self.reorder_default_level else 0
+        return self.db_manager.add_product(
+            item_no, item_name, description, unit, supplier_price, selling_price,
+            current_stock, reorder_alert, reorder_qty
+        )
+
+    def get_all_products(self):
+        """
+        Retrieves all products from the database.
+        Returns a list of product dictionaries.
+        """
+        return self.db_manager.get_all_products()
+
+    def get_product_by_item_no(self, item_no):
+        """
+        Retrieves a single product by its item number.
+        Returns a product dictionary or None if not found.
+        """
+        return self.db_manager.get_product_by_item_no(item_no)
+
+    def search_products(self, query):
+        """
+        Searches for products by item name or item number.
+        This performs a case-insensitive partial match on item_name and exact match on item_no.
+        """
+        products = self.db_manager.get_all_products()
+        if not query:
+            return products # Return all if query is empty
+
+        query = query.lower()
+        results = []
+        for product in products:
+            if (query in product['item_name'].lower() or
+                query == product['item_no'].lower()):
+                results.append(product)
+        return results
+
+    def update_product(self, original_item_no, new_item_data):
+        """
+        Updates an existing product's details.
+        `new_item_data` is a dictionary containing all product fields.
+        """
+        conn = self.db_manager._get_connection() # Access private method for a direct update
+        cursor = conn.cursor()
+        try:
+            # Recalculate reorder_alert based on potentially new current_stock
+            new_item_data['reorder_alert'] = 1 if new_item_data['current_stock'] < self.reorder_default_level else 0
+
+            # SQLite doesn't directly support changing PRIMARY KEY easily without deleting and re-inserting
+            # For simplicity here, we assume item_no change is handled by deleting old and adding new,
+            # or it implies a full replacement.
+            # If item_no itself is changing, it's more complex (delete old, add new)
+            # For now, let's assume original_item_no is the key to update.
+            cursor.execute('''
+                UPDATE products SET
+                    item_no = ?, item_name = ?, description = ?, unit = ?,
+                    supplier_price = ?, selling_price = ?, current_stock = ?,
+                    reorder_alert = ?, reorder_qty = ?
+                WHERE item_no = ?
+            ''', (
+                new_item_data['item_no'], new_item_data['item_name'], new_item_data['description'],
+                new_item_data['unit'], new_item_data['supplier_price'], new_item_data['selling_price'],
+                new_item_data['current_stock'], new_item_data['reorder_alert'], new_item_data['reorder_qty'],
+                original_item_no # Use the original item_no for WHERE clause
+            ))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"An error occurred while updating product {original_item_no}: {e}")
+            return False
+        finally:
+            conn.close()
+
+
+    def delete_product(self, item_no):
+        """Deletes a product from the database."""
+        return self.db_manager.delete_product(item_no)
+
+    def update_stock(self, item_no, quantity_change):
+        """
+        Updates the stock level of a product.
+        quantity_change can be positive (stock in) or negative (stock out).
+        Also updates the reorder_alert status.
+        """
+        success = self.db_manager.update_product_stock(item_no, quantity_change)
+        if success:
+            # After updating stock, get the latest product info to recalculate reorder_alert
+            updated_product = self.db_manager.get_product_by_item_no(item_no)
+            if updated_product:
+                new_reorder_alert = 1 if updated_product['current_stock'] < self.reorder_default_level else 0
+                if new_reorder_alert != updated_product['reorder_alert']:
+                    conn = self.db_manager._get_connection()
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute("UPDATE products SET reorder_alert = ? WHERE item_no = ?",
+                                       (new_reorder_alert, item_no))
+                        conn.commit()
+                    except Exception as e:
+                        print(f"Error updating reorder alert for {item_no}: {e}")
+                    finally:
+                        conn.close()
+        return success
+
+    def get_reorder_alerts(self):
+        """
+        Retrieves a list of products that are below their reorder level.
+        Returns a list of product dictionaries.
+        """
+        conn = self.db_manager._get_connection()
+        cursor = conn.cursor()
+        # Fetch items where current_stock is less than reorder_qty
+        cursor.execute("SELECT * FROM products WHERE current_stock < reorder_qty AND reorder_alert = 1")
+        products = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in products]
+
+    def calculate_inventory_valuation(self):
+        """
+        Calculates the total inventory value based on selling price and supplier price.
+        Returns a dictionary with 'selling_value' and 'supplier_value'.
+        """
+        products = self.db_manager.get_all_products()
+        total_selling_value = 0.0
+        total_supplier_value = 0.0
+
+        for product in products:
+            stock = product['current_stock']
+            selling_price = product['selling_price'] if product['selling_price'] is not None else 0.0
+            supplier_price = product['supplier_price'] if product['supplier_price'] is not None else 0.0
+
+            total_selling_value += stock * selling_price
+            total_supplier_value += stock * supplier_price
+
+        return {
+            'selling_value': total_selling_value,
+            'supplier_value': total_supplier_value
+        }
+
+    def calculate_projected_profit(self):
+        """
+        Calculates the potential profit from current inventory if all items are sold at selling price.
+        """
+        valuation = self.calculate_inventory_valuation()
+        return valuation['selling_value'] - valuation['supplier_value']
+
+    def calculate_reorder_cost(self):
+        """
+        Calculates the total cost needed to reorder items that are below their reorder level.
+        """
+        reorder_items = self.get_reorder_alerts()
+        total_reorder_cost = 0.0
+        for item in reorder_items:
+            # Calculate how much needs to be ordered to reach at least reorder_qty
+            qty_to_order = item['reorder_qty'] - item['current_stock']
+            if qty_to_order > 0:
+                total_reorder_cost += qty_to_order * (item['supplier_price'] if item['supplier_price'] is not None else 0.0)
+        return total_reorder_cost
+
+    def suggest_selling_price(self, supplier_price):
+        """
+        Suggests a selling price based on supplier price and a default markup percentage.
+        """
+        if supplier_price is None:
+            return 0.0 # Cannot suggest if no supplier price
+        return supplier_price * (1 + self.default_markup_percentage / 100)
+
+    def import_inventory_from_csv(self, file_path):
+        """
+        Imports inventory data from a CSV file.
+        Updates existing items based on 'Item No.' or adds new ones.
+        Provides detailed feedback on import status.
+        Expected columns: 'Item No.', 'Item Name', 'Description', 'Unit',
+                          'Supplier Price (Per Unit)', 'Selling Price',
+                          'Current Stock', 'Re-Order (Yes or No)', 'Re-Order QTY'
+        """
+        success_count = 0
+        update_count = 0
+        fail_count = 0
+        errors = []
+
+        if not os.path.exists(file_path):
+            return 0, 0, 0, ["File not found."]
+
+        with open(file_path, mode='r', newline='', encoding='utf-8') as file:
+            reader = csv.DictReader(file)
+            # Check for required headers
+            required_headers = ['Item No.', 'Item Name', 'Description', 'Unit',
+                                'Supplier Price (Per Unit)', 'Selling Price',
+                                'Current Stock', 'Re-Order (Yes or No)', 'Re-Order QTY']
+            if not all(header in reader.fieldnames for header in required_headers):
+                return 0, 0, 0, ["CSV file is missing one or more required headers."]
+
+            for row_num, row in enumerate(reader, start=2): # Start from 2 for row number in file
+                item_no = row.get('Item No.')
+                item_name = row.get('Item Name')
+
+                # Basic validation for essential fields
+                if not item_no or not item_name:
+                    errors.append(f"Row {row_num}: 'Item No.' or 'Item Name' is missing. Skipping.")
+                    fail_count += 1
+                    continue
+
+                try:
+                    # Convert types, handle potential errors
+                    supplier_price = float(row.get('Supplier Price (Per Unit)', 0.0) or 0.0)
+                    selling_price = float(row.get('Selling Price', 0.0) or 0.0)
+                    current_stock = int(row.get('Current Stock', 0) or 0)
+                    reorder_qty = int(row.get('Re-Order QTY', self.reorder_default_level) or self.reorder_default_level)
+                    reorder_alert_str = row.get('Re-Order (Yes or No)', 'No').lower()
+                    reorder_alert = 1 if reorder_alert_str == 'yes' else 0
+
+                    # Check if item exists to decide between add or update
+                    existing_product = self.db_manager.get_product_by_item_no(item_no)
+
+                    if existing_product:
+                        # Update existing product
+                        new_item_data = {
+                            'item_no': item_no, # Item No. cannot be changed for existing.
+                            'item_name': item_name,
+                            'description': row.get('Description'),
+                            'unit': row.get('Unit'),
+                            'supplier_price': supplier_price,
+                            'selling_price': selling_price,
+                            'current_stock': current_stock,
+                            'reorder_alert': reorder_alert,
+                            'reorder_qty': reorder_qty
+                        }
+                        if self.update_product(item_no, new_item_data): # Pass original item_no as key
+                            update_count += 1
+                        else:
+                            errors.append(f"Row {row_num}: Failed to update item '{item_name}' ({item_no}).")
+                            fail_count += 1
+                    else:
+                        # Add new product
+                        if self.add_product(item_no, item_name, row.get('Description'), row.get('Unit'),
+                                            supplier_price, selling_price, current_stock, reorder_qty):
+                            success_count += 1
+                        else:
+                            errors.append(f"Row {row_num}: Failed to add new item '{item_name}' ({item_no}).")
+                            fail_count += 1
+
+                except ValueError as ve:
+                    errors.append(f"Row {row_num}: Data type error - {ve}. Skipping.")
+                    fail_count += 1
+                except Exception as ex:
+                    errors.append(f"Row {row_num}: An unexpected error occurred - {ex}. Skipping.")
+                    fail_count += 1
+        return success_count, update_count, fail_count, errors
+
+    def export_inventory_to_csv(self, file_path):
+        """
+        Exports all inventory data to a CSV file.
+        """
+        products = self.get_all_products()
+        if not products:
+            return False, "No inventory data to export."
+
+        # Define the headers in the desired order
+        headers = ['Item No.', 'Item Name', 'Description', 'Unit',
+                   'Supplier Price (Per Unit)', 'Selling Price', 'Current Stock',
+                   'Re-Order (Yes or No)', 'Re-Order QTY']
+
+        try:
+            with open(file_path, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.DictWriter(file, fieldnames=headers)
+                writer.writeheader()
+
+                for product in products:
+                    row_data = {
+                        'Item No.': product.get('item_no', ''),
+                        'Item Name': product.get('item_name', ''),
+                        'Description': product.get('description', ''),
+                        'Unit': product.get('unit', ''),
+                        'Supplier Price (Per Unit)': product.get('supplier_price', 0.0),
+                        'Selling Price': product.get('selling_price', 0.0),
+                        'Current Stock': product.get('current_stock', 0),
+                        'Re-Order (Yes or No)': 'Yes' if product.get('reorder_alert') == 1 else 'No',
+                        'Re-Order QTY': product.get('reorder_qty', self.reorder_default_level)
+                    }
+                    writer.writerow(row_data)
+            return True, "Inventory exported successfully."
+        except IOError as e:
+            return False, f"File I/O error: {e}"
+        except Exception as e:
+            return False, f"An unexpected error occurred during export: {e}"
