@@ -19,7 +19,7 @@ class InventoryManager:
         # Default markup percentage for suggested selling price
         self.default_markup_percentage = 30 # 30% markup
 
-    def add_product(self, item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_qty):
+    def add_product(self, item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_qty, is_active=1):
         """
         Adds a new product to the inventory.
         Automatically sets reorder_alert based on current_stock and the reorder_default_level.
@@ -29,15 +29,15 @@ class InventoryManager:
         # Call db_manager's add_product, which now returns (success_bool, message_string)
         return self.db_manager.add_product(
             item_no, item_name, description, unit, supplier_price, selling_price,
-            current_stock, reorder_alert, reorder_qty
+            current_stock, reorder_alert, reorder_qty, is_active
         )
 
-    def get_all_products(self):
+    def get_all_products(self, include_inactive=False):
         """
-        Retrieves all products from the database.
+        Retrieves all products from the database, optionally including inactive ones.
         Returns a list of product dictionaries.
         """
-        return self.db_manager.get_all_products()
+        return self.db_manager.get_all_products(include_inactive=include_inactive)
 
     def get_product_by_item_no(self, item_no):
         """
@@ -46,12 +46,13 @@ class InventoryManager:
         """
         return self.db_manager.get_product_by_item_no(item_no)
 
-    def search_products(self, query):
+    def search_products(self, query, include_inactive=False):
         """
         Searches for products by item name or item number.
         This performs a case-insensitive partial match on item_name and exact match on item_no.
+        Includes inactive products only if `include_inactive` is True.
         """
-        products = self.db_manager.get_all_products()
+        products = self.db_manager.get_all_products(include_inactive=include_inactive)
         if not query:
             return products # Return all if query is empty
 
@@ -75,18 +76,20 @@ class InventoryManager:
             # Recalculate reorder_alert based on potentially new current_stock
             new_item_data['reorder_alert'] = 1 if new_item_data['current_stock'] < self.reorder_default_level else 0
 
-            # For now, let's assume original_item_no is the key to update.
-            # If item_no itself is changing, it's more complex (delete old, add new)
+            # Ensure is_active is present, default to 1 if not provided (for older item_data structures)
+            is_active = new_item_data.get('is_active', 1)
+
             cursor.execute('''
                 UPDATE products SET
                     item_no = ?, item_name = ?, description = ?, unit = ?,
                     supplier_price = ?, selling_price = ?, current_stock = ?,
-                    reorder_alert = ?, reorder_qty = ?
+                    reorder_alert = ?, reorder_qty = ?, is_active = ?
                 WHERE item_no = ?
             ''', (
                 new_item_data['item_no'], new_item_data['item_name'], new_item_data['description'],
                 new_item_data['unit'], new_item_data['supplier_price'], new_item_data['selling_price'],
                 new_item_data['current_stock'], new_item_data['reorder_alert'], new_item_data['reorder_qty'],
+                is_active, # Add is_active here
                 original_item_no # Use the original item_no for WHERE clause
             ))
             conn.commit()
@@ -106,6 +109,13 @@ class InventoryManager:
             return True, f"Product '{item_no}' deleted successfully."
         else:
             return False, f"Failed to delete product '{item_no}'."
+
+    def update_product_status(self, item_no, is_active):
+        """
+        Updates the active status of a product (1 for active, 0 for inactive).
+        Returns a tuple: (True/False, "message")
+        """
+        return self.db_manager.update_product_status(item_no, is_active)
 
     def clear_all_inventory(self):
         """
@@ -149,7 +159,8 @@ class InventoryManager:
         conn = self.db_manager._get_connection()
         cursor = conn.cursor()
         # Fetch items where 'reorder_alert' is explicitly set to 1 by the app logic
-        cursor.execute("SELECT * FROM products WHERE reorder_alert = 1")
+        # Ensure we only get active items by default
+        cursor.execute("SELECT * FROM products WHERE reorder_alert = 1 AND is_active = 1")
         products = cursor.fetchall()
         conn.close()
         return [dict(row) for row in products]
@@ -158,8 +169,9 @@ class InventoryManager:
         """
         Calculates the total inventory value based on selling price and supplier price.
         Returns a dictionary with 'selling_value' and 'supplier_value'.
+        Only considers active products.
         """
-        products = self.db_manager.get_all_products()
+        products = self.db_manager.get_all_products(include_inactive=False) # Only active products
         total_selling_value = 0.0
         total_supplier_value = 0.0
 
@@ -178,7 +190,7 @@ class InventoryManager:
 
     def calculate_projected_profit(self):
         """
-        Calculates the potential profit from current inventory if all items are sold at selling price.
+        Calculates the potential profit from current active inventory if all items are sold at selling price.
         """
         valuation = self.calculate_inventory_valuation()
         return valuation['selling_value'] - valuation['supplier_value']
@@ -186,8 +198,9 @@ class InventoryManager:
     def calculate_reorder_cost(self):
         """
         Calculates the total cost needed to reorder items that are below their reorder level.
+        Only considers active products for reorder cost.
         """
-        reorder_items = self.get_reorder_alerts()
+        reorder_items = self.get_reorder_alerts() # This now only returns active items
         total_reorder_cost = 0.0
         for item in reorder_items:
             # Calculate how much needs to be ordered to reach at least reorder_qty (if not already met)
@@ -209,10 +222,11 @@ class InventoryManager:
         Imports inventory data from a CSV file.
         Updates existing items based on 'Item No.' or adds new ones.
         The 'Re-Order (Yes or No)' column in CSV is ignored; the app calculates it.
+        The 'Status' column from CSV is also ignored; all imported/updated items are active by default.
         Provides detailed feedback on import status.
         Expected columns: 'Item No.', 'Item Name', 'Description', 'Unit',
                           'Supplier Price (Per Unit)', 'Selling Price',
-                          'Current Stock', 'Re-Order QTY' (Note: 'Re-Order (Yes or No)' is optional/ignored)
+                          'Current Stock', 'Re-Order QTY'
         """
         success_count = 0
         update_count = 0
@@ -224,14 +238,12 @@ class InventoryManager:
 
         with open(file_path, mode='r', newline='', encoding='utf-8') as file:
             reader = csv.DictReader(file)
-            # Define required headers that MUST be present, excluding the 'Re-Order (Yes or No)'
-            # as it's derived by the app.
+            # Define required headers that MUST be present
             required_headers = ['Item No.', 'Item Name', 'Description', 'Unit',
                                 'Supplier Price (Per Unit)', 'Selling Price',
                                 'Current Stock', 'Re-Order QTY']
             
             # Check if all required headers are present.
-            # It's okay if 'Re-Order (Yes or No)' is in the CSV, but it won't be used.
             if not all(header in reader.fieldnames for header in required_headers):
                 missing_headers = [header for header in required_headers if header not in reader.fieldnames]
                 return 0, 0, 0, [f"CSV file is missing one or more required headers: {', '.join(missing_headers)}"]
@@ -254,9 +266,8 @@ class InventoryManager:
                     current_stock = int(row.get('Current Stock', 0) or 0)
                     reorder_qty = int(row.get('Re-Order QTY', self.reorder_default_level) or self.reorder_default_level)
                     
-                    # The 'Re-Order (Yes or No)' column from CSV is *ignored* for the alert status,
-                    # as the app now derives it. We only care about reorder_qty for the database.
-                    # reorder_alert is calculated by add_product/update_product based on current_stock vs reorder_default_level
+                    # Assume all imported items are active by default when importing
+                    is_active = 1
 
                     # Check if item exists to decide between add or update
                     existing_product = self.db_manager.get_product_by_item_no(item_no)
@@ -271,8 +282,8 @@ class InventoryManager:
                             'supplier_price': supplier_price,
                             'selling_price': selling_price,
                             'current_stock': current_stock,
-                            # reorder_alert is recalculated in update_product
-                            'reorder_qty': reorder_qty
+                            'reorder_qty': reorder_qty,
+                            'is_active': existing_product.get('is_active', 1) # Retain current active status
                         }
                         success_update, msg = self.update_product(item_no, new_item_data)
                         if success_update:
@@ -282,9 +293,8 @@ class InventoryManager:
                             fail_count += 1
                     else:
                         # Add new product
-                        # Now expect a tuple (success_bool, message_string) from self.add_product
                         success_add, msg = self.add_product(item_no, item_name, row.get('Description', ''), row.get('Unit', ''),
-                                            supplier_price, selling_price, current_stock, reorder_qty)
+                                            supplier_price, selling_price, current_stock, reorder_qty, is_active)
                         if success_add:
                             success_count += 1
                         else:
@@ -302,16 +312,16 @@ class InventoryManager:
     def export_inventory_to_csv(self, file_path):
         """
         Exports all inventory data to a CSV file.
-        The 'Re-Order (Yes or No)' column is generated based on the app's internal logic.
+        Includes the 'Status' column based on the app's internal logic.
         """
-        products = self.get_all_products()
+        products = self.db_manager.get_all_products(include_inactive=True) # Export all, active and inactive
         if not products:
             return False, "No inventory data to export."
 
         # Define the headers in the desired order
         headers = ['Item No.', 'Item Name', 'Description', 'Unit',
                    'Supplier Price (Per Unit)', 'Selling Price', 'Current Stock',
-                   'Re-Order (Yes or No)', 'Re-Order QTY']
+                   'Re-Order (Yes or No)', 'Re-Order QTY', 'Status']
 
         try:
             with open(file_path, mode='w', newline='', encoding='utf-8') as file:
@@ -319,6 +329,8 @@ class InventoryManager:
                 writer.writeheader()
 
                 for product in products:
+                    reorder_status_text = 'Yes' if product.get('reorder_alert') == 1 else 'No'
+                    active_status_text = 'Active' if product.get('is_active', 1) == 1 else 'Inactive'
                     row_data = {
                         'Item No.': product.get('item_no', ''),
                         'Item Name': product.get('item_name', ''),
@@ -327,9 +339,9 @@ class InventoryManager:
                         'Supplier Price (Per Unit)': product.get('supplier_price', 0.0),
                         'Selling Price': product.get('selling_price', 0.0),
                         'Current Stock': product.get('current_stock', 0),
-                        # Generate 'Re-Order (Yes or No)' based on product's reorder_alert status
-                        'Re-Order (Yes or No)': 'Yes' if product.get('reorder_alert') == 1 else 'No',
-                        'Re-Order QTY': product.get('reorder_qty', self.reorder_default_level)
+                        'Re-Order (Yes or No)': reorder_status_text,
+                        'Re-Order QTY': product.get('reorder_qty', self.reorder_default_level),
+                        'Status': active_status_text
                     }
                     writer.writerow(row_data)
             return True, "Inventory exported successfully."
@@ -337,4 +349,3 @@ class InventoryManager:
             return False, f"File I/O error: {e}"
         except Exception as e:
             return False, f"An unexpected error occurred during export: {e}"
-
