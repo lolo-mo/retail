@@ -23,6 +23,13 @@ class InventoryFrame(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1) # Row for Treeview
 
+        # --- Configure Treeview Styles ---
+        style = ttk.Style()
+        # Define a tag for reorder alert items (red background)
+        style.map('Treeview', background=[('selected', '#a3d9ff'), ('!selected', 'white')],
+                   foreground=[('selected', 'black'), ('!selected', 'black')])
+        style.tag_configure('reorder_yes', background='#ffdddd', foreground='black') # Light red background
+
         # --- 1. Search and Filter Section ---
         search_frame = ttk.Frame(self, padding="5 5 5 5")
         search_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -31,9 +38,10 @@ class InventoryFrame(ttk.Frame):
         ttk.Label(search_frame, text="Search (Item Name or No.):", font=('Inter', 10)).grid(row=0, column=0, padx=5, sticky="w")
         self.search_entry = ttk.Entry(search_frame, width=40, font=('Inter', 10))
         self.search_entry.grid(row=0, column=1, padx=5, sticky="ew")
-        self.search_entry.bind("<Return>", self.search_items) # Bind Enter key to search
+        # Bind <KeyRelease> for live search
+        self.search_entry.bind("<KeyRelease>", self.search_items) 
 
-        ttk.Button(search_frame, text="Search", command=self.search_items, style='Accent.TButton').grid(row=0, column=2, padx=5)
+        # Removed the explicit "Search" button as it's now live
         ttk.Button(search_frame, text="Refresh", command=self.refresh_data).grid(row=0, column=3, padx=5)
 
 
@@ -49,16 +57,19 @@ class InventoryFrame(ttk.Frame):
         
         self.inventory_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
 
-        # Define column headings and widths
-        self.inventory_tree.heading("Item No.", text="Item No.", anchor="center")
-        self.inventory_tree.heading("Item Name", text="Item Name", anchor="w")
-        self.inventory_tree.heading("Description", text="Description", anchor="w")
-        self.inventory_tree.heading("Unit", text="Unit", anchor="center")
-        self.inventory_tree.heading("Supplier Price (Per Unit)", text="Supplier Price (₱)", anchor="e")
-        self.inventory_tree.heading("Selling Price", text="Selling Price (₱)", anchor="e")
-        self.inventory_tree.heading("Current Stock", text="Current Stock", anchor="center")
-        self.inventory_tree.heading("Re-Order Alert", text="Re-Order Alert", anchor="center")
-        self.inventory_tree.heading("Re-Order QTY", text="Re-Order QTY", anchor="center")
+        # Dictionary to store current sort order for each column
+        self.treeview_sort_order = {col: False for col in columns} # False for ascending, True for descending
+
+        # Define column headings, widths, and bind to sorting function
+        self.inventory_tree.heading("Item No.", text="Item No.", anchor="center", command=lambda: self._sort_treeview_column(self.inventory_tree, "Item No.", 0))
+        self.inventory_tree.heading("Item Name", text="Item Name", anchor="w", command=lambda: self._sort_treeview_column(self.inventory_tree, "Item Name", 1))
+        self.inventory_tree.heading("Description", text="Description", anchor="w", command=lambda: self._sort_treeview_column(self.inventory_tree, "Description", 2))
+        self.inventory_tree.heading("Unit", text="Unit", anchor="center", command=lambda: self._sort_treeview_column(self.inventory_tree, "Unit", 3))
+        self.inventory_tree.heading("Supplier Price (Per Unit)", text="Supplier Price (₱)", anchor="e", command=lambda: self._sort_treeview_column(self.inventory_tree, "Supplier Price (Per Unit)", 4, type=float))
+        self.inventory_tree.heading("Selling Price", text="Selling Price (₱)", anchor="e", command=lambda: self._sort_treeview_column(self.inventory_tree, "Selling Price", 5, type=float))
+        self.inventory_tree.heading("Current Stock", text="Current Stock", anchor="center", command=lambda: self._sort_treeview_column(self.inventory_tree, "Current Stock", 6, type=int))
+        self.inventory_tree.heading("Re-Order Alert", text="Re-Order Alert", anchor="center", command=lambda: self._sort_treeview_column(self.inventory_tree, "Re-Order Alert", 7))
+        self.inventory_tree.heading("Re-Order QTY", text="Re-Order QTY", anchor="center", command=lambda: self._sort_treeview_column(self.inventory_tree, "Re-Order QTY", 8, type=int))
 
         self.inventory_tree.column("Item No.", width=90, anchor="center")
         self.inventory_tree.column("Item Name", width=180, anchor="w")
@@ -115,6 +126,7 @@ class InventoryFrame(ttk.Frame):
         """
         Loads and displays inventory data in the Treeview.
         If products is None, fetches all products from the manager.
+        Applies 'reorder_yes' tag for highlighting.
         """
         self._clear_treeview()
         if products is None:
@@ -122,7 +134,11 @@ class InventoryFrame(ttk.Frame):
 
         for product in products:
             reorder_status = "Yes" if product.get('reorder_alert') == 1 else "No"
-            self.inventory_tree.insert("", "end", iid=product['item_no'], values=(
+            tags = ()
+            if reorder_status == "Yes":
+                tags = ('reorder_yes',) # Apply the highlighting tag
+
+            self.inventory_tree.insert("", "end", iid=product['item_no'], tags=tags, values=(
                 product.get('item_no', ''),
                 product.get('item_name', ''),
                 product.get('description', ''),
@@ -135,12 +151,53 @@ class InventoryFrame(ttk.Frame):
             ))
 
     def search_items(self, event=None): # event=None allows binding to button and Enter key
-        """Performs a search based on the entry field and updates the Treeview."""
+        """Performs a live search based on the entry field and updates the Treeview."""
         query = self.search_entry.get().strip()
         search_results = self.controller.inventory_manager.search_products(query)
         self.load_inventory_data(search_results)
-        if not search_results and query:
-            messagebox.showinfo("Search Results", f"No items found matching '{query}'.")
+        # Removed the messagebox.showinfo for no results, as live search should be subtle.
+        # Users expect the list to simply filter.
+
+    def _sort_treeview_column(self, tree, col_name, col_index, type=str):
+        """
+        Sorts the Treeview column when its header is clicked.
+        """
+        # Get all items from the treeview
+        data = []
+        for item_id in tree.get_children():
+            values = list(tree.item(item_id, 'values'))
+            original_item_no = tree.item(item_id, 'iid') # Get the original iid (item_no)
+            data.append((values[col_index], item_id, original_item_no)) # Store value, item_id, original_iid
+
+        # Determine sort order
+        reverse_sort = self.treeview_sort_order[col_name]
+        self.treeview_sort_order[col_name] = not reverse_sort # Toggle for next click
+
+        # Sort the data
+        try:
+            if type == float:
+                # Need to strip currency symbol for proper float conversion
+                data.sort(key=lambda x: float(x[0].replace('₱', '').replace(',', '').strip()), reverse=reverse_sort)
+            elif type == int:
+                data.sort(key=lambda x: int(x[0]), reverse=reverse_sort)
+            else: # For strings or mixed types
+                data.sort(key=lambda x: x[0].lower() if isinstance(x[0], str) else x[0], reverse=reverse_sort)
+        except ValueError:
+            # Fallback for inconsistent data in column if type conversion fails
+            data.sort(key=lambda x: str(x[0]).lower(), reverse=reverse_sort)
+        except Exception as e:
+            print(f"Error during sorting column {col_name}: {e}")
+            messagebox.showerror("Sorting Error", f"An error occurred while sorting: {e}")
+            return
+
+
+        # Re-insert sorted data into the Treeview
+        for index, (val, item_id, original_item_no) in enumerate(data):
+            tree.move(item_id, '', index) # Move item to its new sorted position
+
+        # Optional: Add a visual indicator for sorting (e.g., arrow in heading)
+        # This is more complex and usually involves custom heading widgets or image manipulation.
+        # For now, sorting direction is handled by the internal self.treeview_sort_order.
 
     def open_add_item_dialog(self):
         """Opens a dialog for adding a new inventory item."""
