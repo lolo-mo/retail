@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox, filedialog # For user feedback and file operations
 import os # For file path manipulation
+import datetime # Import the datetime module
 
 class InventoryFrame(ttk.Frame):
     """
@@ -17,7 +18,7 @@ class InventoryFrame(ttk.Frame):
             parent: The parent widget (ttk.Notebook).
             controller: The MainApplication instance, providing access to managers.
         """
-        super().__init__(parent, padding="15 15 15 15")
+        super().__init__(parent, padding="15 15 15 15") # Add some padding
         self.controller = controller
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1) # Row for Treeview
@@ -86,17 +87,21 @@ class InventoryFrame(ttk.Frame):
         # --- 3. Action Buttons ---
         button_frame = ttk.Frame(self, padding="5 5 5 5")
         button_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        button_frame.columnconfigure(0, weight=1) # Centers buttons if span across
+        # Adjust column weights to accommodate the new button
+        button_frame.columnconfigure(0, weight=1)
         button_frame.columnconfigure(1, weight=1)
         button_frame.columnconfigure(2, weight=1)
         button_frame.columnconfigure(3, weight=1)
         button_frame.columnconfigure(4, weight=1)
+        button_frame.columnconfigure(5, weight=1) # New column for Clear All button
 
         ttk.Button(button_frame, text="Add New Item", command=self.open_add_item_dialog).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Edit Selected Item", command=self.open_edit_item_dialog).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Delete Selected Item", command=self.delete_selected_item).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Import CSV", command=self.import_csv_dialog).grid(row=0, column=3, padx=5, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Export CSV", command=self.export_csv_dialog).grid(row=0, column=4, padx=5, pady=5, sticky="ew")
+        ttk.Button(button_frame, text="Clear All Inventory", command=self.clear_all_inventory_dialog, style='Danger.TButton').grid(row=0, column=5, padx=5, pady=5, sticky="ew")
+
 
         # --- Initial Load of Data ---
         self.refresh_data()
@@ -170,12 +175,30 @@ class InventoryFrame(ttk.Frame):
         item_name = self.inventory_tree.item(selected_item_id, 'values')[1] # Get item name from Treeview values
 
         if messagebox.askyesno("Confirm Deletion", f"Are you sure you want to delete '{item_name}' (Item No: {item_no})? This action cannot be undone."):
-            success = self.controller.inventory_manager.delete_product(item_no)
+            success, message = self.controller.inventory_manager.delete_product(item_no)
             if success:
-                messagebox.showinfo("Success", f"Item '{item_name}' deleted successfully.")
+                messagebox.showinfo("Success", message)
                 self.refresh_data()
             else:
-                messagebox.showerror("Error", f"Failed to delete item '{item_name}'.")
+                messagebox.showerror("Error", message)
+
+    def clear_all_inventory_dialog(self):
+        """
+        Opens a confirmation dialog to clear all inventory data.
+        """
+        if messagebox.askyesno(
+            "Confirm Clear All",
+            "ARE YOU ABSOLUTELY SURE YOU WANT TO CLEAR ALL INVENTORY DATA?\n\n"
+            "This action is irreversible and will delete ALL products from your inventory. "
+            "This is intended for testing purposes only.\n\n"
+            "Do you wish to proceed?"
+        ):
+            success, message = self.controller.inventory_manager.clear_all_inventory()
+            if success:
+                messagebox.showinfo("Success", message)
+                self.refresh_data()
+            else:
+                messagebox.showerror("Error", message)
 
     def import_csv_dialog(self):
         """Opens a file dialog to select a CSV file for import."""
@@ -388,4 +411,3 @@ class AddEditItemDialog(tk.Toplevel):
             self.destroy() # Close the dialog
         else:
             messagebox.showerror("Error", message)
-
