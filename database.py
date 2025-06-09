@@ -128,7 +128,10 @@ class DatabaseManager:
     # You will add similar methods for all other tables as you build out managers.
 
     def add_product(self, item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_alert, reorder_qty):
-        """Adds a new product to the database."""
+        """
+        Adds a new product to the database.
+        Returns a tuple: (True/False, "message")
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
@@ -137,13 +140,11 @@ class DatabaseManager:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_alert, reorder_qty))
             conn.commit()
-            return True
+            return True, f"Product '{item_name}' (Item No: {item_no}) added successfully."
         except sqlite3.IntegrityError:
-            print(f"Error: Product with Item No. '{item_no}' already exists.")
-            return False
+            return False, f"Error: Product with Item No. '{item_no}' already exists."
         except Exception as e:
-            print(f"An error occurred while adding product: {e}")
-            return False
+            return False, f"An unexpected error occurred while adding product: {e}"
         finally:
             conn.close()
 
@@ -170,6 +171,7 @@ class DatabaseManager:
         """
         Updates the stock level of a product.
         quantity_change can be positive (stock in) or negative (stock out).
+        Returns True/False based on success.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -184,7 +186,10 @@ class DatabaseManager:
             conn.close()
 
     def delete_product(self, item_no):
-        """Deletes a product from the database."""
+        """
+        Deletes a product from the database.
+        Returns True/False based on success.
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
