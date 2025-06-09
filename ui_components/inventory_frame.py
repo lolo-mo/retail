@@ -170,8 +170,8 @@ class InventoryFrame(ttk.Frame):
         data = []
         for item_id in tree.get_children():
             values = list(tree.item(item_id, 'values'))
-            original_item_no = tree.item(item_id, 'iid') # Get the original iid (item_no)
-            data.append((values[col_index], item_id, original_item_no)) # Store value, item_id, original_iid
+            # item_id IS already the original iid (item_no)
+            data.append((values[col_index], item_id)) # Store value and item_id (which is the original iid)
 
         # Determine sort order
         reverse_sort = self.treeview_sort_order[col_name]
@@ -181,13 +181,14 @@ class InventoryFrame(ttk.Frame):
         try:
             if type == float:
                 # Need to strip currency symbol for proper float conversion
-                data.sort(key=lambda x: float(x[0].replace('₱', '').replace(',', '').strip()), reverse=reverse_sort)
+                data.sort(key=lambda x: float(str(x[0]).replace('₱', '').replace(',', '').strip()), reverse=reverse_sort)
             elif type == int:
-                data.sort(key=lambda x: int(x[0]), reverse=reverse_sort)
+                data.sort(key=lambda x: int(str(x[0])), reverse=reverse_sort)
             else: # For strings or mixed types
-                data.sort(key=lambda x: x[0].lower() if isinstance(x[0], str) else x[0], reverse=reverse_sort)
-        except ValueError:
-            # Fallback for inconsistent data in column if type conversion fails
+                data.sort(key=lambda x: str(x[0]).lower() if isinstance(x[0], str) else str(x[0]), reverse=reverse_sort)
+        except ValueError as ve:
+            # Fallback for inconsistent data in column if type conversion fails, print error for debugging
+            print(f"ValueError during sorting column {col_name}: {ve}. Falling back to string sort.")
             data.sort(key=lambda x: str(x[0]).lower(), reverse=reverse_sort)
         except Exception as e:
             print(f"Error during sorting column {col_name}: {e}")
@@ -196,8 +197,8 @@ class InventoryFrame(ttk.Frame):
 
 
         # Re-insert sorted data into the Treeview
-        for index, (val, item_id, original_item_no) in enumerate(data):
-            tree.move(item_id, '', index) # Move item to its new sorted position
+        for index, (val, item_id_to_move) in enumerate(data):
+            tree.move(item_id_to_move, '', index) # Move item to its new sorted position
 
         # Optional: Add a visual indicator for sorting (e.g., arrow in heading)
         # This is more complex and usually involves custom heading widgets or image manipulation.
