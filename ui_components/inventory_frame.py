@@ -32,18 +32,29 @@ class InventoryFrame(ttk.Frame):
         style.configure('Treeview.Heading', font=('Inter', 10, 'bold'))
 
         # --- 1. Search and Filter Section ---
-        search_frame = ttk.Frame(self, padding="5 5 5 5")
-        search_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        search_frame.columnconfigure(1, weight=1) # Make search entry expand
+        search_filter_frame = ttk.Frame(self, padding="5 5 5 5")
+        search_filter_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        search_filter_frame.columnconfigure(1, weight=1) # Make search entry expand
+        search_filter_frame.columnconfigure(3, weight=0) # For filter label
+        search_filter_frame.columnconfigure(4, weight=0) # For filter combobox
 
-        ttk.Label(search_frame, text="Search (Item Name or No.):", font=('Inter', 10)).grid(row=0, column=0, padx=5, sticky="w")
-        self.search_entry = ttk.Entry(search_frame, width=40, font=('Inter', 10))
+
+        ttk.Label(search_filter_frame, text="Search (Item Name or No.):", font=('Inter', 10)).grid(row=0, column=0, padx=5, sticky="w")
+        self.search_entry = ttk.Entry(search_filter_frame, width=40, font=('Inter', 10))
         self.search_entry.grid(row=0, column=1, padx=5, sticky="ew")
         # Bind <KeyRelease> for live search
         self.search_entry.bind("<KeyRelease>", self.search_items) 
 
+        # Filter for Active/All Items
+        ttk.Label(search_filter_frame, text="Show Items:", font=('Inter', 10)).grid(row=0, column=3, padx=(15,5), sticky="w")
+        self.show_items_filter = ttk.Combobox(search_filter_frame, values=["Active Only", "All Items"], state="readonly", width=12)
+        self.show_items_filter.set("Active Only") # Default value
+        self.show_items_filter.grid(row=0, column=4, padx=5, sticky="ew")
+        self.show_items_filter.bind("<<ComboboxSelected>>", lambda event: self.refresh_data())
+
+
         # Removed the explicit "Search" button as it's now live
-        ttk.Button(search_frame, text="Refresh", command=self.refresh_data).grid(row=0, column=3, padx=5)
+        ttk.Button(search_filter_frame, text="Refresh", command=self.refresh_data).grid(row=0, column=5, padx=5)
 
 
         # --- 2. Inventory Treeview ---
@@ -54,12 +65,13 @@ class InventoryFrame(ttk.Frame):
 
         columns = ("Item No.", "Item Name", "Description", "Unit",
                    "Supplier Price (Per Unit)", "Selling Price", "Current Stock",
-                   "Re-Order Alert", "Re-Order QTY")
+                   "Re-Order Alert", "Re-Order QTY", "Status") # Added Status column
         
         self.inventory_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
 
         # IMPORTANT: tag_configure must be on the Treeview instance, not the Style object
         self.inventory_tree.tag_configure('reorder_yes', background='#ffdddd', foreground='black') # Light red background
+        self.inventory_tree.tag_configure('inactive_item', foreground='grey', font=('Inter', 10, 'italic')) # Grey out inactive items
 
         # Dictionary to store current sort order for each column
         self.treeview_sort_order = {col: False for col in columns} # False for ascending, True for descending
@@ -74,6 +86,8 @@ class InventoryFrame(ttk.Frame):
         self.inventory_tree.heading("Current Stock", text="Current Stock", anchor="center", command=lambda: self._sort_treeview_column(self.inventory_tree, "Current Stock", 6, type=int))
         self.inventory_tree.heading("Re-Order Alert", text="Re-Order Alert", anchor="center", command=lambda: self._sort_treeview_column(self.inventory_tree, "Re-Order Alert", 7))
         self.inventory_tree.heading("Re-Order QTY", text="Re-Order QTY", anchor="center", command=lambda: self._sort_treeview_column(self.inventory_tree, "Re-Order QTY", 8, type=int))
+        self.inventory_tree.heading("Status", text="Status", anchor="center", command=lambda: self._sort_treeview_column(self.inventory_tree, "Status", 9))
+
 
         self.inventory_tree.column("Item No.", width=90, anchor="center")
         self.inventory_tree.column("Item Name", width=180, anchor="w")
@@ -84,6 +98,8 @@ class InventoryFrame(ttk.Frame):
         self.inventory_tree.column("Current Stock", width=100, anchor="center")
         self.inventory_tree.column("Re-Order Alert", width=100, anchor="center")
         self.inventory_tree.column("Re-Order QTY", width=100, anchor="center")
+        self.inventory_tree.column("Status", width=80, anchor="center")
+
 
         self.inventory_tree.grid(row=0, column=0, sticky="nsew")
 
@@ -108,7 +124,8 @@ class InventoryFrame(ttk.Frame):
         button_frame.columnconfigure(2, weight=1)
         button_frame.columnconfigure(3, weight=1)
         button_frame.columnconfigure(4, weight=1)
-        button_frame.columnconfigure(5, weight=1) # New column for Clear All button
+        button_frame.columnconfigure(5, weight=1)
+        button_frame.columnconfigure(6, weight=1) # New column for Discontinue/Activate
 
         ttk.Button(button_frame, text="Add New Item", command=self.open_add_item_dialog).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Edit Selected Item", command=self.open_edit_item_dialog).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
@@ -116,6 +133,7 @@ class InventoryFrame(ttk.Frame):
         ttk.Button(button_frame, text="Import CSV", command=self.import_csv_dialog).grid(row=0, column=3, padx=5, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Export CSV", command=self.export_csv_dialog).grid(row=0, column=4, padx=5, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Clear All Inventory", command=self.clear_all_inventory_dialog, style='Danger.TButton').grid(row=0, column=5, padx=5, pady=5, sticky="ew")
+        ttk.Button(button_frame, text="Toggle Active Status", command=self._toggle_item_status).grid(row=0, column=6, padx=5, pady=5, sticky="ew")
 
 
         # --- Initial Load of Data ---
@@ -129,20 +147,28 @@ class InventoryFrame(ttk.Frame):
     def load_inventory_data(self, products=None):
         """
         Loads and displays inventory data in the Treeview.
-        If products is None, fetches all products from the manager.
-        Applies 'reorder_yes' tag for highlighting.
+        If products is None, fetches all products from the manager,
+        respecting the 'include_inactive' filter.
+        Applies 'reorder_yes' tag for highlighting and 'inactive_item' tag.
         """
         self._clear_treeview()
+        
+        include_inactive = (self.show_items_filter.get() == "All Items")
+
         if products is None:
-            products = self.controller.inventory_manager.get_all_products()
+            products = self.controller.inventory_manager.get_all_products(include_inactive=include_inactive)
 
         for product in products:
             reorder_status = "Yes" if product.get('reorder_alert') == 1 else "No"
-            tags = ()
-            if reorder_status == "Yes":
-                tags = ('reorder_yes',) # Apply the highlighting tag
+            active_status = "Active" if product.get('is_active', 1) == 1 else "Inactive" # Default to active if column missing
 
-            self.inventory_tree.insert("", "end", iid=product['item_no'], tags=tags, values=(
+            tags = []
+            if reorder_status == "Yes":
+                tags.append('reorder_yes') # Apply the highlighting tag
+            if active_status == "Inactive":
+                tags.append('inactive_item') # Apply inactive styling
+
+            self.inventory_tree.insert("", "end", iid=product['item_no'], tags=tuple(tags), values=(
                 product.get('item_no', ''),
                 product.get('item_name', ''),
                 product.get('description', ''),
@@ -151,13 +177,15 @@ class InventoryFrame(ttk.Frame):
                 self.controller.report_generator.format_currency(product.get('selling_price', 0.0)),
                 product.get('current_stock', 0),
                 reorder_status,
-                product.get('reorder_qty', self.controller.inventory_manager.reorder_default_level)
+                product.get('reorder_qty', self.controller.inventory_manager.reorder_default_level),
+                active_status # Display the status
             ))
 
     def search_items(self, event=None): # event=None allows binding to button and Enter key
         """Performs a live search based on the entry field and updates the Treeview."""
         query = self.search_entry.get().strip()
-        search_results = self.controller.inventory_manager.search_products(query)
+        include_inactive = (self.show_items_filter.get() == "All Items")
+        search_results = self.controller.inventory_manager.search_products(query, include_inactive=include_inactive)
         self.load_inventory_data(search_results)
         # Removed the messagebox.showinfo for no results, as live search should be subtle.
         # Users expect the list to simply filter.
@@ -170,7 +198,6 @@ class InventoryFrame(ttk.Frame):
         data = []
         for item_id in tree.get_children():
             values = list(tree.item(item_id, 'values'))
-            # item_id IS already the original iid (item_no)
             data.append((values[col_index], item_id)) # Store value and item_id (which is the original iid)
 
         # Determine sort order
@@ -241,6 +268,35 @@ class InventoryFrame(ttk.Frame):
             if success:
                 messagebox.showinfo("Success", message)
                 self.refresh_data()
+            else:
+                messagebox.showerror("Error", message)
+
+    def _toggle_item_status(self):
+        """
+        Toggles the 'is_active' status of the selected item.
+        """
+        selected_item_id = self.inventory_tree.focus()
+        if not selected_item_id:
+            messagebox.showwarning("No Item Selected", "Please select an item to change its status.")
+            return
+
+        item_no = selected_item_id
+        current_status_text = self.inventory_tree.item(item_no, 'values')[9] # Get current status from Treeview
+        current_is_active = 1 if current_status_text == "Active" else 0
+        
+        new_is_active = 1 if current_is_active == 0 else 0 # Toggle status
+        
+        confirm_action = "activate" if new_is_active == 1 else "discontinue"
+        item_name = self.inventory_tree.item(item_no, 'values')[1]
+
+        if messagebox.askyesno(
+            f"Confirm {confirm_action.capitalize()}",
+            f"Are you sure you want to {confirm_action} '{item_name}' (Item No: {item_no})?"
+        ):
+            success, message = self.controller.inventory_manager.update_product_status(item_no, new_is_active)
+            if success:
+                messagebox.showinfo("Success", message)
+                self.refresh_data() # Refresh UI to show updated status and filtering
             else:
                 messagebox.showerror("Error", message)
 
