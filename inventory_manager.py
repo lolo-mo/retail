@@ -26,6 +26,7 @@ class InventoryManager:
         """
         # Re-order alert is decided by the app: 'Yes' if stock < reorder_level, 'No' otherwise
         reorder_alert = 1 if current_stock < self.reorder_default_level else 0
+        # Call db_manager's add_product, which now returns (success_bool, message_string)
         return self.db_manager.add_product(
             item_no, item_name, description, unit, supplier_price, selling_price,
             current_stock, reorder_alert, reorder_qty
@@ -99,13 +100,26 @@ class InventoryManager:
 
     def delete_product(self, item_no):
         """Deletes a product from the database."""
-        return self.db_manager.delete_product(item_no)
+        # The db_manager.delete_product returns a boolean, we adapt it to (bool, msg)
+        success = self.db_manager.delete_product(item_no)
+        if success:
+            return True, f"Product '{item_no}' deleted successfully."
+        else:
+            return False, f"Failed to delete product '{item_no}'."
+
+    def clear_all_inventory(self):
+        """
+        Clears all inventory data from the database.
+        Returns a tuple: (True/False, "message")
+        """
+        return self.db_manager.clear_all_products()
 
     def update_stock(self, item_no, quantity_change):
         """
         Updates the stock level of a product.
         quantity_change can be positive (stock in) or negative (stock out).
         Also updates the reorder_alert status based on the new stock level.
+        Returns True/False based on success.
         """
         success = self.db_manager.update_product_stock(item_no, quantity_change)
         if success:
@@ -124,7 +138,8 @@ class InventoryManager:
                         print(f"Error updating reorder alert for {item_no}: {e}")
                     finally:
                         conn.close()
-        return success
+            return True # Stock update was successful
+        return False # Stock update failed
 
     def get_reorder_alerts(self):
         """
@@ -267,6 +282,7 @@ class InventoryManager:
                             fail_count += 1
                     else:
                         # Add new product
+                        # Now expect a tuple (success_bool, message_string) from self.add_product
                         success_add, msg = self.add_product(item_no, item_name, row.get('Description', ''), row.get('Unit', ''),
                                             supplier_price, selling_price, current_stock, reorder_qty)
                         if success_add:
