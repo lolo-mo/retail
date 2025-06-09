@@ -14,16 +14,17 @@ class InventoryManager:
         This allows it to interact with the database.
         """
         self.db_manager = db_manager
-        # Default reorder level, can be made configurable later
-        self.reorder_default_level = 5
+        # Default reorder level, changed from 5 to 4 as per request
+        self.reorder_default_level = 4
         # Default markup percentage for suggested selling price
         self.default_markup_percentage = 30 # 30% markup
 
     def add_product(self, item_no, item_name, description, unit, supplier_price, selling_price, current_stock, reorder_qty):
         """
         Adds a new product to the inventory.
-        Automatically sets reorder_alert based on current_stock.
+        Automatically sets reorder_alert based on current_stock and the reorder_default_level.
         """
+        # Re-order alert is decided by the app: 'Yes' if stock < reorder_level, 'No' otherwise
         reorder_alert = 1 if current_stock < self.reorder_default_level else 0
         return self.db_manager.add_product(
             item_no, item_name, description, unit, supplier_price, selling_price,
@@ -65,6 +66,7 @@ class InventoryManager:
         """
         Updates an existing product's details.
         `new_item_data` is a dictionary containing all product fields.
+        Automatically recalculates reorder_alert.
         """
         conn = self.db_manager._get_connection() # Access private method for a direct update
         cursor = conn.cursor()
@@ -72,11 +74,8 @@ class InventoryManager:
             # Recalculate reorder_alert based on potentially new current_stock
             new_item_data['reorder_alert'] = 1 if new_item_data['current_stock'] < self.reorder_default_level else 0
 
-            # SQLite doesn't directly support changing PRIMARY KEY easily without deleting and re-inserting
-            # For simplicity here, we assume item_no change is handled by deleting old and adding new,
-            # or it implies a full replacement.
-            # If item_no itself is changing, it's more complex (delete old, add new)
             # For now, let's assume original_item_no is the key to update.
+            # If item_no itself is changing, it's more complex (delete old, add new)
             cursor.execute('''
                 UPDATE products SET
                     item_no = ?, item_name = ?, description = ?, unit = ?,
@@ -90,10 +89,10 @@ class InventoryManager:
                 original_item_no # Use the original item_no for WHERE clause
             ))
             conn.commit()
-            return True
+            return True, f"Product '{new_item_data['item_name']}' updated successfully."
         except Exception as e:
             print(f"An error occurred while updating product {original_item_no}: {e}")
-            return False
+            return False, f"Failed to update product: {e}"
         finally:
             conn.close()
 
@@ -106,7 +105,7 @@ class InventoryManager:
         """
         Updates the stock level of a product.
         quantity_change can be positive (stock in) or negative (stock out).
-        Also updates the reorder_alert status.
+        Also updates the reorder_alert status based on the new stock level.
         """
         success = self.db_manager.update_product_stock(item_no, quantity_change)
         if success:
@@ -130,12 +129,12 @@ class InventoryManager:
     def get_reorder_alerts(self):
         """
         Retrieves a list of products that are below their reorder level.
-        Returns a list of product dictionaries.
+        Returns a list of product dictionaries where 'reorder_alert' is 1.
         """
         conn = self.db_manager._get_connection()
         cursor = conn.cursor()
-        # Fetch items where current_stock is less than reorder_qty
-        cursor.execute("SELECT * FROM products WHERE current_stock < reorder_qty AND reorder_alert = 1")
+        # Fetch items where 'reorder_alert' is explicitly set to 1 by the app logic
+        cursor.execute("SELECT * FROM products WHERE reorder_alert = 1")
         products = cursor.fetchall()
         conn.close()
         return [dict(row) for row in products]
@@ -176,10 +175,10 @@ class InventoryManager:
         reorder_items = self.get_reorder_alerts()
         total_reorder_cost = 0.0
         for item in reorder_items:
-            # Calculate how much needs to be ordered to reach at least reorder_qty
-            qty_to_order = item['reorder_qty'] - item['current_stock']
-            if qty_to_order > 0:
-                total_reorder_cost += qty_to_order * (item['supplier_price'] if item['supplier_price'] is not None else 0.0)
+            # Calculate how much needs to be ordered to reach at least reorder_qty (if not already met)
+            qty_needed_to_reorder = item['reorder_qty'] - item['current_stock']
+            if qty_needed_to_reorder > 0: # Only calculate if stock is actually below reorder_qty
+                total_reorder_cost += qty_needed_to_reorder * (item['supplier_price'] if item['supplier_price'] is not None else 0.0)
         return total_reorder_cost
 
     def suggest_selling_price(self, supplier_price):
@@ -194,10 +193,11 @@ class InventoryManager:
         """
         Imports inventory data from a CSV file.
         Updates existing items based on 'Item No.' or adds new ones.
+        The 'Re-Order (Yes or No)' column in CSV is ignored; the app calculates it.
         Provides detailed feedback on import status.
         Expected columns: 'Item No.', 'Item Name', 'Description', 'Unit',
                           'Supplier Price (Per Unit)', 'Selling Price',
-                          'Current Stock', 'Re-Order (Yes or No)', 'Re-Order QTY'
+                          'Current Stock', 'Re-Order QTY' (Note: 'Re-Order (Yes or No)' is optional/ignored)
         """
         success_count = 0
         update_count = 0
@@ -209,31 +209,39 @@ class InventoryManager:
 
         with open(file_path, mode='r', newline='', encoding='utf-8') as file:
             reader = csv.DictReader(file)
-            # Check for required headers
+            # Define required headers that MUST be present, excluding the 'Re-Order (Yes or No)'
+            # as it's derived by the app.
             required_headers = ['Item No.', 'Item Name', 'Description', 'Unit',
                                 'Supplier Price (Per Unit)', 'Selling Price',
-                                'Current Stock', 'Re-Order (Yes or No)', 'Re-Order QTY']
+                                'Current Stock', 'Re-Order QTY']
+            
+            # Check if all required headers are present.
+            # It's okay if 'Re-Order (Yes or No)' is in the CSV, but it won't be used.
             if not all(header in reader.fieldnames for header in required_headers):
-                return 0, 0, 0, ["CSV file is missing one or more required headers."]
+                missing_headers = [header for header in required_headers if header not in reader.fieldnames]
+                return 0, 0, 0, [f"CSV file is missing one or more required headers: {', '.join(missing_headers)}"]
 
             for row_num, row in enumerate(reader, start=2): # Start from 2 for row number in file
-                item_no = row.get('Item No.')
-                item_name = row.get('Item Name')
+                item_no = row.get('Item No.', '').strip()
+                item_name = row.get('Item Name', '').strip()
 
                 # Basic validation for essential fields
                 if not item_no or not item_name:
-                    errors.append(f"Row {row_num}: 'Item No.' or 'Item Name' is missing. Skipping.")
+                    errors.append(f"Row {row_num}: 'Item No.' or 'Item Name' is missing/empty. Skipping.")
                     fail_count += 1
                     continue
 
                 try:
                     # Convert types, handle potential errors
+                    # Use .get() with default values to prevent KeyError if column is missing
                     supplier_price = float(row.get('Supplier Price (Per Unit)', 0.0) or 0.0)
                     selling_price = float(row.get('Selling Price', 0.0) or 0.0)
                     current_stock = int(row.get('Current Stock', 0) or 0)
                     reorder_qty = int(row.get('Re-Order QTY', self.reorder_default_level) or self.reorder_default_level)
-                    reorder_alert_str = row.get('Re-Order (Yes or No)', 'No').lower()
-                    reorder_alert = 1 if reorder_alert_str == 'yes' else 0
+                    
+                    # The 'Re-Order (Yes or No)' column from CSV is *ignored* for the alert status,
+                    # as the app now derives it. We only care about reorder_qty for the database.
+                    # reorder_alert is calculated by add_product/update_product based on current_stock vs reorder_default_level
 
                     # Check if item exists to decide between add or update
                     existing_product = self.db_manager.get_product_by_item_no(item_no)
@@ -241,41 +249,44 @@ class InventoryManager:
                     if existing_product:
                         # Update existing product
                         new_item_data = {
-                            'item_no': item_no, # Item No. cannot be changed for existing.
+                            'item_no': item_no,
                             'item_name': item_name,
-                            'description': row.get('Description'),
-                            'unit': row.get('Unit'),
+                            'description': row.get('Description', ''),
+                            'unit': row.get('Unit', ''),
                             'supplier_price': supplier_price,
                             'selling_price': selling_price,
                             'current_stock': current_stock,
-                            'reorder_alert': reorder_alert,
+                            # reorder_alert is recalculated in update_product
                             'reorder_qty': reorder_qty
                         }
-                        if self.update_product(item_no, new_item_data): # Pass original item_no as key
+                        success_update, msg = self.update_product(item_no, new_item_data)
+                        if success_update:
                             update_count += 1
                         else:
-                            errors.append(f"Row {row_num}: Failed to update item '{item_name}' ({item_no}).")
+                            errors.append(f"Row {row_num}: Failed to update item '{item_name}' ({item_no}). Error: {msg}")
                             fail_count += 1
                     else:
                         # Add new product
-                        if self.add_product(item_no, item_name, row.get('Description'), row.get('Unit'),
-                                            supplier_price, selling_price, current_stock, reorder_qty):
+                        success_add, msg = self.add_product(item_no, item_name, row.get('Description', ''), row.get('Unit', ''),
+                                            supplier_price, selling_price, current_stock, reorder_qty)
+                        if success_add:
                             success_count += 1
                         else:
-                            errors.append(f"Row {row_num}: Failed to add new item '{item_name}' ({item_no}).")
+                            errors.append(f"Row {row_num}: Failed to add new item '{item_name}' ({item_no}). Error: {msg}")
                             fail_count += 1
 
                 except ValueError as ve:
-                    errors.append(f"Row {row_num}: Data type error - {ve}. Skipping.")
+                    errors.append(f"Row {row_num}: Data type error for '{item_name}' ({item_no}) - {ve}. Skipping.")
                     fail_count += 1
                 except Exception as ex:
-                    errors.append(f"Row {row_num}: An unexpected error occurred - {ex}. Skipping.")
+                    errors.append(f"Row {row_num}: An unexpected error occurred for '{item_name}' ({item_no}) - {ex}. Skipping.")
                     fail_count += 1
         return success_count, update_count, fail_count, errors
 
     def export_inventory_to_csv(self, file_path):
         """
         Exports all inventory data to a CSV file.
+        The 'Re-Order (Yes or No)' column is generated based on the app's internal logic.
         """
         products = self.get_all_products()
         if not products:
@@ -300,6 +311,7 @@ class InventoryManager:
                         'Supplier Price (Per Unit)': product.get('supplier_price', 0.0),
                         'Selling Price': product.get('selling_price', 0.0),
                         'Current Stock': product.get('current_stock', 0),
+                        # Generate 'Re-Order (Yes or No)' based on product's reorder_alert status
                         'Re-Order (Yes or No)': 'Yes' if product.get('reorder_alert') == 1 else 'No',
                         'Re-Order QTY': product.get('reorder_qty', self.reorder_default_level)
                     }
@@ -309,3 +321,4 @@ class InventoryManager:
             return False, f"File I/O error: {e}"
         except Exception as e:
             return False, f"An unexpected error occurred during export: {e}"
+
