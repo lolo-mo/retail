@@ -25,10 +25,11 @@ class InventoryFrame(ttk.Frame):
 
         # --- Configure Treeview Styles ---
         style = ttk.Style()
-        # Define a tag for reorder alert items (red background)
-        style.map('Treeview', background=[('selected', '#a3d9ff'), ('!selected', 'white')],
-                   foreground=[('selected', 'black'), ('!selected', 'black')])
-        style.tag_configure('reorder_yes', background='#ffdddd', foreground='black') # Light red background
+        # Map for selected/non-selected states (applies to all Treeviews if not specifically tagged)
+        style.map('Treeview', background=[('selected', '#a3d9ff')], foreground=[('selected', 'black')])
+        # Define default background for non-selected rows (usually white)
+        style.configure('Treeview', background='white', foreground='black', rowheight=25)
+        style.configure('Treeview.Heading', font=('Inter', 10, 'bold'))
 
         # --- 1. Search and Filter Section ---
         search_frame = ttk.Frame(self, padding="5 5 5 5")
@@ -56,6 +57,9 @@ class InventoryFrame(ttk.Frame):
                    "Re-Order Alert", "Re-Order QTY")
         
         self.inventory_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
+
+        # IMPORTANT: tag_configure must be on the Treeview instance, not the Style object
+        self.inventory_tree.tag_configure('reorder_yes', background='#ffdddd', foreground='black') # Light red background
 
         # Dictionary to store current sort order for each column
         self.treeview_sort_order = {col: False for col in columns} # False for ascending, True for descending
