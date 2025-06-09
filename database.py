@@ -202,6 +202,24 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def clear_all_products(self):
+        """
+        Deletes all records from the 'products' table.
+        Use with extreme caution, as this will clear your entire inventory.
+        Returns a tuple: (True/False, "message")
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM products")
+            conn.commit()
+            return True, "All inventory products cleared successfully."
+        except Exception as e:
+            conn.rollback()
+            return False, f"An error occurred while clearing all products: {e}"
+        finally:
+            conn.close()
+
     # --- Placeholder for other table operations ---
 
     def add_sale(self, sale_data, sale_items_data):
